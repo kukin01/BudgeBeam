@@ -1,67 +1,89 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/user');
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 
 const generateToken = (userId) => {
-  return jwt.sign({ id: userId}, process.env.JWT_SECRET, { expiresIn: '1h' });
-}
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+};
 
 exports.register = async (req, res) => {
   try {
-    const { firstname, lastname, email, password } = req.body;
-    if (!firstname || !lastname || !email || !password) {
-      return res.status(400).json({ message: 'Please provide all required fields' });
+    console.log("Register payload:", req.body);
+    const { firstName, lastName, email, password } = req.body;
+
+    if (!firstName || !lastName || !email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Please provide all required fields" });
     }
-    const existingUser = await User.findOne({email});
-    if (existingUser) {
-      return res.status(400).json({ message: 'User already exists with this email' });  
+
+    const pool = req.app.get("pool");
+
+    const existingUser = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email.toLowerCase()]
+    );
+    if (existingUser.rows.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "User already exists with this email" });
     }
-    const newUser = await User.create({
-        firstname,
-        lastname,
-        email,
-        password,
-    })
-    // const token = generateToken(newUser._id);
-    res.status(201).json({ 
-      message: 'User registered successfully', 
-      user: {
-        id: newUser._id,
-        firstname: newUser.firstname,
-        lastname: newUser.lastname,
-        email: newUser.email,
-        password: newUser.password
-      }, 
-    //   token 
+
+    // Hash password before storing
+    const hashed = await bcrypt.hash(password, 10);
+
+    const newUser = await pool.query(
+      "INSERT INTO users (firstname, lastname, email, password) VALUES ($1, $2, $3, $4) RETURNING id, firstname, lastname, email, created_at",
+      [firstName, lastName, email.toLowerCase(), hashed]
+    );
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: newUser.rows[0],
     });
-  } catch(error) {
-    res.status(500).json({ message: 'Error registering user', error: error.message });
+  } catch (error) {
+    console.error("Register error:", error);
+    res
+      .status(500)
+      .json({ message: "Error registering user", error: error.message });
   }
-}
+};
 
 exports.login = async (req, res) => {
   try {
-    const { email, password} = req.body;
+    const { email, password } = req.body;
     if (!email || !password) {
-      return res.status(400).json({ message: 'Please provide email and password' });
+      return res
+        .status(400)
+        .json({ message: "Please provide email and password" });
     }
 
-    const user  = await User.findOne({ email }).select('+password');
-    if (!user || !(await user.comparePassword(password))) {
-      return res.status(401).json({ message: 'Invalid email or password' });
+    const pool = req.app.get("pool");
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [
+      email.toLowerCase(),
+    ]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: "Invalid email or password" });
     }
-    const token = generateToken(user._id);
+
+    const dbUser = result.rows[0];
+    const match = await bcrypt.compare(password, dbUser.password);
+    if (!match) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    const token = generateToken(dbUser.id);
     res.status(200).json({
-      message: 'Login successful',
+      message: "Login successful",
       token,
       user: {
-        id: user._id,
-        firstname: user.firstname,
-        lastname: user.lastname,
-        email: user.email,
-        password: user.password
-      }
-    })
+        id: dbUser.id,
+        firstname: dbUser.firstname,
+        lastname: dbUser.lastname,
+        email: dbUser.email,
+      },
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Error logging in', error: error.message });
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Error logging in", error: error.message });
   }
-}
+};
